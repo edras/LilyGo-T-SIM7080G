@@ -178,7 +178,7 @@ void setup()
     - XPOWERS_CHG_LED_ON,
     - XPOWERS_CHG_LED_CTRL_CHG,
     * */
-    PMU.setChargingLedMode(XPOWERS_CHG_LED_BLINK_1HZ);
+    PMU.setChargingLedMode(XPOWERS_CHG_LED_CTRL_CHG);
 
 }
 

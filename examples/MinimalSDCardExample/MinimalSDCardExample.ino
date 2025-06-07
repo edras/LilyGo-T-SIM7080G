@@ -214,7 +214,7 @@ void setup()
 
     SD_MMC.setPins(SDMMC_CLK, SDMMC_CMD, SDMMC_DATA);   // set sdcard pin use 1-bit mode
 
-    if (!SD_MMC.begin("/sdcard", true)) {
+    if (!SD_MMC.begin("/sdcard", true, false, SDMMC_FREQ_DEFAULT)) {
         Serial.println("Card Mount Failed");
         while (1) {
             delay(1000);

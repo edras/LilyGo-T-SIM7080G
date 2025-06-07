@@ -10,24 +10,32 @@ int16_t buffer[BUFFER_SIZE];
 float filtered[BUFFER_SIZE];
 
 struct Biquad {
-    float a0, a1, a2, b1, b2;
+    float b0, b1, b2, a1, a2;
     float z1, z2;
 };
 
-Biquad aweight_biquad = {
-    1.0f, -2.0f, 1.0f,
-    -1.99004745483398f, 0.99007225036621f,
-    0, 0
+// A-weighting coefficients for 8 kHz sample rate
+Biquad aweight1 = { 
+    0.25574113f, -0.51148225f, 0.25574113f, -0.64730764f, 0.1429805f, 0, 0 
+};
+Biquad aweight2 = { 
+    0.20657208f, 0.41314417f, 0.20657208f, -0.36952738f, 0.19581571f, 0, 0 
 };
 
+float applyBiquad(Biquad &filt, float sample) {
+    float result = filt.b0 * sample + filt.z1;
+    filt.z1 = filt.b1 * sample - filt.a1 * result + filt.z2;
+    filt.z2 = filt.b2 * sample - filt.a2 * result;
+    return result;
+}
+
 void filterAWeighting(int16_t *in, float *out, int length) {
-    aweight_biquad.z1 = aweight_biquad.z2 = 0;
+    aweight1.z1 = aweight1.z2 = 0;
+    aweight2.z1 = aweight2.z2 = 0;
     for (int i = 0; i < length; i++) {
         float sample = in[i] / 32768.0f;
-        float result = aweight_biquad.a0 * sample + aweight_biquad.z1;
-        aweight_biquad.z1 = aweight_biquad.a1 * sample - aweight_biquad.b1 * result + aweight_biquad.z2;
-        aweight_biquad.z2 = aweight_biquad.a2 * sample - aweight_biquad.b2 * result;
-        out[i] = result;
+        float y1 = applyBiquad(aweight1, sample);
+        out[i] = applyBiquad(aweight2, y1);
     }
 }
 
@@ -67,6 +75,7 @@ void calibrateMicrophone() {
     int refFreq = 1000;
     int duration = CALIBRATION_DURATION_MS;
     tone(PIEZO_PIN, refFreq);
+    delay(100); // Allow tone to stabilize
 
     unsigned long start = millis();
     double sum = 0;
@@ -88,6 +97,7 @@ void calibrateMicrophone() {
     isCalibrated = true;
     displayCalibrationDone(rms);
 }
+
 void initAudio() {
     i2s_pin_config_t pin_config = {
         .bck_io_num = 14,

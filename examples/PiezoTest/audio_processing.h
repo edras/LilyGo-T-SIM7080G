@@ -1,8 +1,8 @@
 #pragma once
 #include <Arduino.h>
 
-#define SAMPLE_RATE 44100 // 16000 or 44100
-#define BUFFER_SIZE 1024
+#define SAMPLE_RATE 8000
+#define BUFFER_SIZE 256 // or 512
 #define CALIBRATION_DURATION_MS 1000
 #define MEASURE_WINDOW_MS 500
 #define PIEZO_SPL_DB 80.0

@@ -3,6 +3,8 @@
 
 void initPMU();
 void handlePMUInterrupt();
+void printPMUStatus();
+void printPMUVoltage();
 void setChargingLedOn();
 void setChargingLedOff();
 void setChargingLed4Hz();

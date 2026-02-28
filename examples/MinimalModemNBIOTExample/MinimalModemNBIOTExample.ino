@@ -206,9 +206,6 @@ void setup()
     Serial.println(register_info[s]);
 
 
-
-
-
     // Activate network bearer, APN can not be configured by default,
     // if the SIM card is locked, please configure the correct APN and user password, use the gprsConnect() method
     modem.sendAT("+CNACT=0,1");

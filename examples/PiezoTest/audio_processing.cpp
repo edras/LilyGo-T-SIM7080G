@@ -101,7 +101,7 @@ void calibrateMicrophone() {
 void initAudio() {
     i2s_pin_config_t pin_config = {
         .bck_io_num = 14,
-        .ws_io_num = 36,
+        .ws_io_num = 13,
         .data_out_num = I2S_PIN_NO_CHANGE,
         .data_in_num = 11,
     };

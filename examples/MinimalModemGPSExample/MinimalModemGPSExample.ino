@@ -146,7 +146,7 @@ void setup()
         1 Start QZSS NMEA out.
     */
     // GNSS Work Mode Set GPS+BEIDOU
-    modem.sendAT("+CGNSMOD=1,0,1,0,0");
+    modem.sendAT("+CGNSMOD=1,1,1,1,1");
     modem.waitResponse();
 
 
@@ -175,11 +175,13 @@ void setup()
 
     // GPS function needs to be enabled for the first use
     if (modem.enableGPS() == false) {
-        Serial.print("Modem enable gps function failed!!");
+        Serial.println("\n\rModem enable gps function failed!!");
         while (1) {
             delay(5000);
         }
     }
+
+    Serial.print("Finished configuring GPS!!");
 
 }
 

@@ -151,7 +151,7 @@ void setup()
         1 Start QZSS NMEA out.
     */
     // GNSS Work Mode Set GPS+BEIDOU
-    modem.sendAT("+CGNSMOD=1,0,1,0,0");
+    modem.sendAT("+CGNSMOD=1,1,1,1,1");
     modem.waitResponse();
 
 

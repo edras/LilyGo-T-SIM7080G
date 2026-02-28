@@ -64,7 +64,7 @@ const char resource[] = "/TinyGSM/logo.txt";
 // Using 7080G with Hologram.io , https://github.com/Xinyuan-LilyGO/LilyGo-T-SIM7080G/issues/19
 // const char *apn = "hologram";
 
-const char *apn = "Your APN";
+const char *apn = "TM";
 
 void setup()
 {
@@ -204,9 +204,6 @@ void setup()
     Serial.println();
     Serial.print("Network register info:");
     Serial.println(register_info[s]);
-
-
-
 
 
     // Activate network bearer, APN can not be configured by default,

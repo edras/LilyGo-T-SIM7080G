@@ -9,6 +9,7 @@
 #include "modem_client.h"
 #include "gps_manager.h"
 #include "display_debug.h"
+#include "provisioning.h"
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -20,18 +21,22 @@
 
 static EventGroupHandle_t events;
 
+// ── Runtime-configurable parameters (updated from server responses) ──
+static volatile float    gSPLThresholdDB = SPL_THRESHOLD_DB;
+static volatile uint32_t gTXIntervalS    = SPL_TRANSMIT_INTERVAL_S;
+
 // ── Shared state (written by audioTask, read by others) ──────────
 static float  splCircular[RING_BUFFER_SECONDS] = {};
-static int    splHead  = 0;   // next write index
+static int    splHead  = 0;
 static int    splCount = 0;
 static float  lastSPL  = 0;
 static SemaphoreHandle_t splMtx;
 
-// ── Buffers (stack/static to avoid heap fragmentation) ───────────
+// ── Buffers ───────────────────────────────────────────────────────
 static int16_t sampleAccum[SAMPLES_PER_SECOND];
 static float   filteredBuf[SAMPLES_PER_SECOND];
 static uint8_t adpcmSecBuf[ADPCM_BYTES_PER_SEC];
-static uint8_t alertBuf[ALERT_BUFFER_SIZE];   // 40 KB, static in PSRAM? use ps_malloc if needed
+static uint8_t alertBuf[ALERT_BUFFER_SIZE];
 
 // ── audioTask ────────────────────────────────────────────────────
 static void audioTask(void *) {
@@ -50,12 +55,10 @@ static void audioTask(void *) {
         if (accumulated < SAMPLES_PER_SECOND) continue;
         accumulated = 0;
 
-        // ── Compute A-weighted SPL ────────────────────────────────
         applyAWeighting(sampleAccum, filteredBuf, SAMPLES_PER_SECOND);
         float rms = computeRMS(filteredBuf, SAMPLES_PER_SECOND);
         float spl = rmsToDBSPL(rms);
 
-        // ── Push SPL to circular array ────────────────────────────
         xSemaphoreTake(splMtx, portMAX_DELAY);
         splCircular[splHead] = spl;
         splHead = (splHead + 1) % RING_BUFFER_SECONDS;
@@ -63,29 +66,25 @@ static void audioTask(void *) {
         lastSPL = spl;
         xSemaphoreGive(splMtx);
 
-        // ── ADPCM encode and push to audio ring buffer ───────────
         size_t bytes = adpcmEncode(encState, sampleAccum, SAMPLES_PER_SECOND, adpcmSecBuf);
         audioRingPushSecond(adpcmSecBuf, bytes);
 
-        // ── Threshold check ───────────────────────────────────────
-        if (spl >= SPL_THRESHOLD_DB) {
+        if (spl >= gSPLThresholdDB) {
             xEventGroupSetBits(events, EVT_THRESHOLD_CROSSED);
         }
 
-        // ── SD log (non-blocking best-effort) ────────────────────
         GPSData gps = gpsGetCached();
-        sdLogSPL(millis() / 1000, spl, gps.lat, gps.lon);
+        sdLogSPL(gpsCurrentEpoch(), spl, gps.lat, gps.lon);
 
         Serial.printf("[Audio] SPL=%.1f dB  RMS=%.5f\n", spl, rms);
     }
 }
 
-// ── transmitTask ──────────────────────────────────────────────────
+// ── transmitTask ─────────────────────────────────────────────────
 static void transmitTask(void *) {
-    static bool modemReady = false;
+    static bool     modemReady    = false;
     static uint32_t lastGPSUpdate = 0;
 
-    // Wait a bit for audio to stabilise before first TX attempt
     vTaskDelay(pdMS_TO_TICKS(10000));
 
     if (!modemInit()) {
@@ -93,8 +92,40 @@ static void transmitTask(void *) {
         vTaskDelete(nullptr);
         return;
     }
+
+    // ── Load or obtain auth token ─────────────────────────────────
+    String token = provLoadToken();
+    if (token.length() == 0) {
+        // Not provisioned yet — start registration flow
+        String deviceID = provGetDeviceID();
+        Serial.printf("[Prov] Device ID: %s\n", deviceID.c_str());
+        Serial.println("[Prov] No token — starting registration");
+
+        bool tokenObtained = false;
+        while (!tokenObtained) {
+            if (!modemConnect()) { vTaskDelay(pdMS_TO_TICKS(30000)); continue; }
+            String newToken;
+            RegResult r = modemRegister(deviceID, newToken);
+            modemDisconnect();
+            if (r == RegResult::OK) {
+                provSaveToken(newToken);
+                token = newToken;
+                tokenObtained = true;
+                Serial.println("[Prov] Token received and saved");
+            } else if (r == RegResult::PENDING) {
+                Serial.println("[Prov] Awaiting admin approval — retrying in 60 s");
+                vTaskDelay(pdMS_TO_TICKS(60000));
+            } else {
+                Serial.println("[Prov] Registration error — retrying in 30 s");
+                vTaskDelay(pdMS_TO_TICKS(30000));
+            }
+        }
+    }
+    modemSetToken(token);
+    Serial.println("[Prov] Auth token loaded");
+
     if (!modemConnect()) {
-        Serial.println("[TX] Network registration failed");
+        Serial.println("[TX] Initial network connect failed — transmit disabled");
         vTaskDelete(nullptr);
         return;
     }
@@ -102,38 +133,29 @@ static void transmitTask(void *) {
     modemDisconnect();
 
     while (true) {
-        // Wait for SPL transmit tick or alert
         EventBits_t bits = xEventGroupWaitBits(events,
             EVT_TRANSMIT_SPL | EVT_THRESHOLD_CROSSED,
             pdTRUE, pdFALSE,
-            pdMS_TO_TICKS(SPL_TRANSMIT_INTERVAL_S * 1000UL));
+            pdMS_TO_TICKS(gTXIntervalS * 1000UL));
 
         if (!modemReady) continue;
 
-        // ── GPS every 30 min ──────────────────────────────────────
-        uint32_t nowS = millis() / 1000;
-        if (nowS - lastGPSUpdate >= GPS_INTERVAL_S) {
-            gpsTryFix();
-            lastGPSUpdate = nowS;
-        }
-
-        GPSData gps = gpsGetCached();
-        float   battV = getBatteryVoltage();
-
-        // ── Audio alert (priority) ────────────────────────────────
+        // ── Audio alert (priority — handle before SPL report) ─────
         if (bits & EVT_THRESHOLD_CROSSED) {
+            uint32_t ts       = gpsCurrentEpoch();
             size_t alertBytes = audioRingGetLast(ALERT_SECONDS, alertBuf);
             float  peak       = lastSPL;
             displayAlert(peak);
-            sdSaveAlert(millis() / 1000, alertBuf, alertBytes);
+            sdSaveAlert(ts, alertBuf, alertBytes);
             if (modemConnect()) {
-                sendAudioAlert(alertBuf, alertBytes, peak, gps, millis() / 1000);
+                sendAudioAlert(alertBuf, alertBytes, peak, gpsGetCached(), ts);
                 modemDisconnect();
             }
         }
 
-        // ── SPL report every 60 s ────────────────────────────────
-        if (bits & EVT_TRANSMIT_SPL || true) {  // always send on each wake
+        // ── SPL report + server config update ─────────────────────
+        {
+            uint32_t ts = gpsCurrentEpoch();
             float snapshot[RING_BUFFER_SECONDS];
             int   n;
             xSemaphoreTake(splMtx, portMAX_DELAY);
@@ -145,19 +167,48 @@ static void transmitTask(void *) {
             xSemaphoreGive(splMtx);
 
             if (modemConnect()) {
-                sendSPLReport(snapshot, n, gps, millis() / 1000);
+                ServerConfig cfg = sendSPLReport(snapshot, n, gpsGetCached(), ts);
                 modemDisconnect();
+
+                if (cfg.valid) {
+                    // Apply threshold update
+                    if (cfg.thresholdDB > 0.0f) {
+                        gSPLThresholdDB = cfg.thresholdDB;
+                        Serial.printf("[Config] Threshold → %.1f dB\n", cfg.thresholdDB);
+                    }
+                    // Apply TX interval update
+                    if (cfg.intervalS > 0) {
+                        gTXIntervalS = cfg.intervalS;
+                        Serial.printf("[Config] TX interval → %u s\n", cfg.intervalS);
+                    }
+                    // GPS refresh + clock re-sync
+                    if (cfg.gpsRefresh) {
+                        Serial.println("[Config] Server requested GPS refresh");
+                        gpsTryFix();
+                        lastGPSUpdate = gpsCurrentEpoch();
+                    }
+                }
             }
         }
 
-        displayStatus(lastSPL, battV, modemReady, true);
+        // ── Periodic GPS (fallback when server never requests it) ─
+        {
+            uint32_t nowEpoch = gpsCurrentEpoch();
+            if (lastGPSUpdate == 0 ||
+                (nowEpoch > 0 && nowEpoch - lastGPSUpdate >= GPS_INTERVAL_S)) {
+                gpsTryFix();
+                lastGPSUpdate = gpsCurrentEpoch();
+            }
+        }
+
+        displayStatus(lastSPL, getBatteryVoltage(), modemReady, true);
     }
 }
 
-// ── SPL tick task — fires EVT_TRANSMIT_SPL every 60 s ────────────
+// ── SPL tick task ─────────────────────────────────────────────────
 static void splTickTask(void *) {
     while (true) {
-        vTaskDelay(pdMS_TO_TICKS(SPL_TRANSMIT_INTERVAL_S * 1000UL));
+        vTaskDelay(pdMS_TO_TICKS(gTXIntervalS * 1000UL));
         xEventGroupSetBits(events, EVT_TRANSMIT_SPL);
     }
 }
@@ -169,8 +220,8 @@ void setup() {
     delay(1000);
     Serial.println("[Bracustica] Boot");
 
-    events  = xEventGroupCreate();
-    splMtx  = xSemaphoreCreateMutex();
+    events = xEventGroupCreate();
+    splMtx = xSemaphoreCreateMutex();
 
     initPMU();
     enableSDPower();

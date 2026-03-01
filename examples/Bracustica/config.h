@@ -55,11 +55,16 @@
 
 // ── NB-IoT ───────────────────────────────────────────────────────
 #define MODEM_APN               "TM"
-#define SERVER_HOST             "your.server.com"
-#define SERVER_PORT             80
-#define API_SPL_PATH            "/api/v1/spl"
-#define API_ALERT_PATH          "/api/v1/alert"
-#define DEVICE_ID               "bracustica-001"
+#define SERVER_HOST             "versatek.com.br"
+#define SERVER_PORT             443                             // HTTPS
+#define API_BASE                "/bracustica/api"
+#define API_REGISTER_PATH       API_BASE "/register"
+#define API_SPL_PATH            API_BASE "/spl"
+#define API_ALERT_PATH          API_BASE "/alert"
+
+// ── NVS key for auth token (max 15 chars for NVS key) ───────────
+#define NVS_NAMESPACE           "bracustica"
+#define NVS_TOKEN_KEY           "auth_token"
 
 // ── Power ────────────────────────────────────────────────────────
 #define CPU_MAX_FREQ_MHZ        80
